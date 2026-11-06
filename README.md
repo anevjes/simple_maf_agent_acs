@@ -104,6 +104,99 @@ The `acs_decision` JSON log shows the interception point, verdict, rule reason,
 warning, and approval resolution. It does **not** log prompts, tool arguments,
 tool results, or account numbers.
 
+## Run against the remote hosted agent
+
+Use Python 3.13+ on your host, `azd` 1.36+ with the `azure.ai.agents` extension,
+and an authenticated azd environment pointing at the deployed agent. Remote mode
+uses only Python's standard library: it does **not** load MAF or native ACS on
+the client, so it can run directly on Windows ARM64 without Docker.
+
+Run one live case against the existing `banking-foundry-rg` deployment:
+
+```powershell
+python main.py --mode remote --demo --environment banking-foundry-rg --scenario large-transfer
+```
+
+Omit `--scenario` to attempt every remotely supported case:
+
+```powershell
+python main.py --mode remote --demo --environment banking-foundry-rg
+```
+
+`--agent-name` selects an `azure.yaml` agent service (default:
+`banking-acs-demo`); `--version 1` pins a deployed version; `--timeout 180` sets
+the per-command timeout. Endpoint URLs and the default deployed version come
+from the selected **azd environment**, not `.env` or a local model client.
+Different environments can target different hosted endpoints. This is not a
+direct-model-endpoint mode. Remote mode exercises the policy packaged in the
+selected deployed version; local policy edits are not uploaded or activated.
+
+The runner uses azd's configured authentication. It does not open login windows,
+copy tokens, change authentication settings, provision resources, or deploy code.
+If azd needs to reuse an existing Azure CLI sign-in, configure its documented
+`auth.useAzCliAuth` option separately:
+
+```powershell
+# Optional, persistent user-level opt-in when Azure CLI is already signed in.
+azd config set auth.useAzCliAuth true
+```
+
+The runner never changes that setting. Live requests incur Azure usage charges;
+the remote demo does **not** run the separate 22-question evaluator batch.
+
+An `Update available: ...` notice is informational, not the reason a command
+failed. azd can write the actual error to **stdout** while notices go to
+**stderr**; the runner includes both streams on failure. If the real error says
+`not logged in` and Azure CLI is already authenticated, the opt-in above lets
+azd reuse that sign-in without another login window.
+Raw HTTP/SSE response payloads are suppressed in CLI failure diagnostics.
+
+Verify access without invoking the banking agent:
+
+```powershell
+azd ai agent show --environment banking-foundry-rg --output json
+```
+
+A cleanup error after failed session creation is secondary: fix the original
+creation/authentication error first. The banking request has not been invoked,
+so changing the Rego policy will not resolve this failure.
+
+For each executable scenario, the runner:
+
+1. Creates its own uniquely named hosted session.
+2. Sends a natural-language request containing explicit tool arguments, including
+   integer cents and a fresh idempotency key. It never sends `/demo` commands to
+   the real model or supplies approval as a tool argument.
+3. Reads that hosted session's native `acs_decision` logs and requires a complete,
+   unambiguous control trace. Short log-ingestion delays are retried.
+4. Reports `OBSERVED` only for the expected **hook, verdict, reason and warning**.
+   `agent_shutdown: allow` never substitutes for `pre_tool_call: deny`.
+5. Stops only its own session, including on failure. Existing sessions are not
+   stopped or deleted. azd may update its last-session pointer; stopped demo
+   sessions retain their filesystem.
+
+`approval-granted` and `approval-rejected` are explicitly **SKIP**: the hosted
+agent has no trusted operator resolver, and a prompt cannot grant that authority.
+`hard-limit` remains executable without a resolver.
+
+The real model is nondeterministic. It can refuse a request without attempting a
+tool, normalize invalid arguments, or mask text before ACS sees it. Those cases
+are `NOT_OBSERVED`, **not** proof that ACS denied or transformed anything.
+Remote mode checks audit evidence; it does not assert exact executed arguments
+or remote ledger mutations. Keep the offline runner for those deterministic
+assertions. Transport/authentication failures, incomplete audit, native runtime
+errors, and unredacted synthetic output fail explicitly.
+
+Exit codes: **0** when all executed cases have the expected native evidence,
+**1** for missing evidence or execution errors, **2** for invalid CLI arguments
+or an all-skipped selection. `--mode foundry --demo` is rejected rather than
+silently running offline; `foundry` remains the local server's live-model mode.
+
+VS Code also provides **Run remote hosted ACS scenario** in Run Task. It runs on
+the host and prompts for the azd environment and scenario; it does not build or
+start the local Docker server. No redeployment is needed to use the remote
+client with the already-deployed agent.
+
 ## Interactive Agent Inspector / F5
 
 Open this folder as the VS Code workspace and press **F5**. The configurations in
@@ -157,10 +250,18 @@ malformed amount types before tool execution, approval identity, idempotency,
 ownership, and fail-closed manifest loading.
 There is no mocked ACS engine.
 
-Local verification: **54 tests passed**, **14/14 CLI scenarios passed**, and real
-Responses HTTP requests verified transfers, idempotency, policy denials, and
-tool/output redaction without leaking account numbers into SSE events. Ruff and
-Pyright passed. These checks use the scripted model, not a live Foundry model.
+Remote-client tests mock azd's HTTP/log transport, exercise its failure and cleanup
+paths, and check compatibility with real native audit records. They do not invoke
+Foundry. Live validation of the new remote runner has not been performed.
+
+Earlier local verification passed **54 native banking regressions** and
+**14/14 offline CLI scenarios**. The latest focused run passed
+**65 remote-client/audit-compatibility checks**, including CLI diagnostic and
+payload-suppression regressions.
+Earlier local Responses HTTP requests verified transfers, idempotency, policy
+denials, and tool/output redaction without leaking account numbers into SSE
+events. Ruff and Pyright passed. Validation is offline: banking runs use the
+scripted model, and the remote client's transport is mocked.
 
 ### Policy test questions
 

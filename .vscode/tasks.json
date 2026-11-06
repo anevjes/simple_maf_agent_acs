@@ -59,6 +59,20 @@
       "problemMatcher": []
     },
     {
+      "label": "Run remote hosted ACS scenario",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "main.py", "--mode", "remote", "--demo",
+        "--environment", "${input:remoteEnvironment}",
+        "--scenario", "${input:remoteScenario}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Run Agent/Workflow HTTP Server",
       "type": "shell",
       "command": "docker",
@@ -112,6 +126,32 @@
     }
   ],
   "inputs": [
+    {
+      "id": "remoteEnvironment",
+      "type": "promptString",
+      "description": "Authenticated azd environment for the deployed hosted agent",
+      "default": "banking-foundry-rg"
+    },
+    {
+      "id": "remoteScenario",
+      "type": "pickString",
+      "description": "Live hosted scenario (incurs Azure usage charges)",
+      "options": [
+        "balance",
+        "small-transfer",
+        "warning",
+        "large-transfer",
+        "unknown-payee",
+        "other-account",
+        "forbidden-export",
+        "invalid-amount",
+        "hard-limit",
+        "prompt-injection",
+        "tool-redaction",
+        "output-redaction"
+      ],
+      "default": "large-transfer"
+    },
     {
       "id": "openAgentInspector",
       "type": "command",
