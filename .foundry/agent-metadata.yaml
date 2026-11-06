@@ -1,0 +1,19 @@
+defaultEnvironment: banking-foundry-rg
+environments:
+  banking-foundry-rg:
+    azd:
+      environmentName: banking-foundry-rg
+      service: banking-acs-demo
+    evaluationSuites:
+      - id: policy-boundaries
+        generationSource: manual-fallback
+        tags:
+          tier: smoke
+          purpose: native-policy-boundaries
+          stage: local
+        datasetFile: .foundry/datasets/banking-acs-demo-eval-seed-v1.jsonl
+        evaluators:
+          - name: banking-acs-policy-smoke
+            version: "1"
+            threshold: 0.5
+            definitionFile: .foundry/evaluators/banking-acs-policy-smoke-v1.json

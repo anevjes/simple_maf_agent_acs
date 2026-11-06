@@ -1,0 +1,10 @@
+name: banking-acs-policy-smoke
+agent:
+    name: banking-acs-demo
+    kind: hosted
+    config: .agent_configs\baseline\metadata.yaml
+dataset:
+    local_uri: .foundry/datasets/banking-acs-demo-eval-seed-v1.jsonl
+options:
+    eval_model: gpt-6.1-sol
+max_samples: 22

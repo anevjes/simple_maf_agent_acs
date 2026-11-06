@@ -1,0 +1,62 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: banking-acs-demo
+  version: "1.0"
+extends: []
+policies:
+  banking:
+    type: rego
+    bundle: .
+    query: data.banking.allow
+intervention_points:
+  agent_startup:
+    policy_target: $.agent_init
+    policy:
+      id: banking
+  input:
+    policy_target: $.input
+    policy:
+      id: banking
+      query: data.banking.input_verdict
+  pre_model_call:
+    policy_target: $.messages
+    policy:
+      id: banking
+  post_model_call:
+    policy_target: $.response
+    policy:
+      id: banking
+  pre_tool_call:
+    policy_target: $.tool_call.args
+    tool_name_from: $.tool_call.name
+    policy:
+      id: banking
+      query: data.banking.tool_verdict
+  post_tool_call:
+    policy_target: $.tool_result.value
+    tool_name_from: $.tool_call.name
+    policy:
+      id: banking
+      query: data.banking.tool_result_verdict
+  output:
+    policy_target: $.output
+    policy:
+      id: banking
+      query: data.banking.output_verdict
+  agent_shutdown:
+    policy_target: $.summary
+    policy:
+      id: banking
+tools:
+  get_balance:
+    type: Tool
+    id: get_balance
+  transfer_money:
+    type: Tool
+    id: transfer_money
+  get_account_profile:
+    type: Tool
+    id: get_account_profile
+  export_all_accounts:
+    type: Tool
+    id: export_all_accounts

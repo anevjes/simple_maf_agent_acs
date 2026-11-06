@@ -1,0 +1,125 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Validate prerequisites",
+      "type": "aitk",
+      "command": "debug-check-prerequisites",
+      "args": {
+        "portOccupancy": [5679, 8088]
+      }
+    },
+    {
+      "label": "Build banking runtime image",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "build", "--platform", "linux/amd64", "--build-arg", "PIP_INDEX_URL",
+        "--target", "runtime",
+        "-t", "banking-acs-demo:local", "."
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build banking test image",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "build", "--platform", "linux/amd64", "--build-arg", "PIP_INDEX_URL",
+        "--target", "test",
+        "-t", "banking-acs-demo:test", "."
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run native ACS tests",
+      "type": "shell",
+      "command": "docker",
+      "args": ["run", "--rm", "--platform", "linux/amd64", "banking-acs-demo:test"],
+      "dependsOn": "Build banking test image",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run ACS demonstration scenarios",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "run", "--rm", "--platform", "linux/amd64",
+        "banking-acs-demo:local", "python", "main.py", "--demo"
+      ],
+      "dependsOn": "Build banking runtime image",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Agent/Workflow HTTP Server",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "run", "--rm", "--platform", "linux/amd64",
+        "--name", "simple-maf-banking-acs-debug",
+        "-p", "127.0.0.1:8088:8088",
+        "-p", "127.0.0.1:5679:5679",
+        "-e", "BANKING_MODE=demo",
+        "--entrypoint", "/app/.venv/bin/python",
+        "banking-acs-demo:local",
+        "-m", "debugpy", "--listen", "0.0.0.0:5679", "main.py"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "dependsOrder": "sequence",
+      "dependsOn": ["Validate prerequisites", "Build banking runtime image"],
+      "problemMatcher": {
+        "owner": "banking-demo",
+        "pattern": {
+          "regexp": "^([^:]+):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*",
+          "endsPattern": "Application startup complete|[Rr]unning on|Started server process"
+        }
+      }
+    },
+    {
+      "label": "Open Agent Inspector",
+      "type": "shell",
+      "command": "Write-Output '${input:openAgentInspector}'",
+      "presentation": {
+        "reveal": "never"
+      },
+      "dependsOn": "Run Agent/Workflow HTTP Server",
+      "problemMatcher": []
+    },
+    {
+      "label": "Stop banking debug server",
+      "type": "shell",
+      "command": "docker",
+      "args": ["stop", "simple-maf-banking-acs-debug"],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "openAgentInspector",
+      "type": "command",
+      "command": "ai-mlstudio.openTestTool",
+      "args": {
+        "triggeredFrom": "tasks",
+        "port": 8088
+      }
+    }
+  ]
+}

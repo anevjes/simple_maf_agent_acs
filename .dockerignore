@@ -1,0 +1,10 @@
+.env
+.env.*
+.azure
+.venv
+.git
+.vscode
+__pycache__
+.pytest_cache
+.ruff_cache
+*.pyc
