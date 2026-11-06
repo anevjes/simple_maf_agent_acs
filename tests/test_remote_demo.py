@@ -6,6 +6,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -143,6 +144,74 @@ def test_remote_denial_is_not_overridden_by_shutdown_allow(cli: FakeAzd, capsys)
     assert stop[3:6] == ["sessions", "stop", session_id]
 
 
+def test_remote_displayed_input_is_generated_once_and_sent_unchanged(
+    cli: FakeAzd, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    generated: list[UUID] = []
+
+    def request_uuid() -> UUID:
+        value = UUID(int=len(generated) + 1)
+        generated.append(value)
+        return value
+
+    monkeypatch.setattr("scenarios.uuid4", request_uuid)
+    assert run_remote_demo("large-transfer") == 0
+    output = capsys.readouterr().out
+    prompt = cli.calls[1][5]
+    assert generated == [UUID(int=1)]
+    assert prompt in output
+    assert output.index(prompt) < output.index("[RUN] Sending the prepared input.")
+
+
+def test_remote_timeline_shows_every_native_event_before_response_and_cleanup(
+    cli: FakeAzd, capsys
+) -> None:
+    assert run_remote_demo("large-transfer") == 0
+    output = capsys.readouterr().out
+    timeline = output.split("NATIVE ACS TIMELINE", 1)[1].split("AGENT RESPONSE", 1)[0]
+    for point in (
+        "agent_startup",
+        "input",
+        "pre_model_call",
+        "post_model_call",
+        "pre_tool_call",
+        "output",
+        "agent_shutdown",
+    ):
+        assert point in timeline
+    assert timeline.count("pre_model_call") == 2
+    assert timeline.count("post_model_call") == 2
+    assert "approval_required=True; resolved_by=(none)" in timeline
+    assert timeline.index("pre_tool_call") < timeline.index("agent_shutdown")
+    assert output.index("INPUT") < output.index("NATIVE ACS TIMELINE")
+    assert output.index("AGENT RESPONSE") < output.index("HOST CLEANUP")
+    assert output.index("HOST CLEANUP") < output.index("RESULT")
+
+
+def test_partial_native_trace_is_shown_but_never_reported_as_observed(
+    cli: FakeAzd, capsys
+) -> None:
+    cli.log_outputs = [json.dumps(event(8, "agent_shutdown"))]
+    with pytest.raises(RemoteDemoError, match="missing, truncated, or ambiguous"):
+        run_remote_demo("large-transfer")
+    output = capsys.readouterr().out
+    assert "PARTIAL - NOT VERIFIED" in output
+    assert "agent_shutdown" in output
+    assert not any(line.startswith("OBSERVED ") for line in output.splitlines())
+
+
+def test_cleanup_failure_does_not_hide_the_recorded_agent_timeline(cli: FakeAzd, capsys) -> None:
+    cli.failures["sessions stop"] = 1
+    with pytest.raises(RemoteDemoError, match="cleanup"):
+        run_remote_demo("large-transfer")
+    output = capsys.readouterr().out
+    assert "NATIVE ACS TIMELINE" in output
+    assert "agent_startup" in output
+    assert "agent_shutdown" in output
+    assert "AGENT RESPONSE" in output
+    assert not any(line.startswith("OBSERVED ") for line in output.splitlines())
+
+
 def test_model_refusal_is_not_reported_as_acs_denial(cli: FakeAzd, capsys) -> None:
     cli.log_outputs = [
         "\n".join(
@@ -170,7 +239,9 @@ def test_model_refusal_is_not_reported_as_acs_denial(cli: FakeAzd, capsys) -> No
 def test_host_owned_approval_scenarios_are_skipped(name: str, cli: FakeAzd, capsys) -> None:
     assert run_remote_demo(name) == 2
     assert cli.calls == []
-    assert f"SKIP {name}" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert f"SKIP {name}" in output
+    assert "INPUT: not sent (scenario skipped)" in output
 
 
 def test_default_remote_selection_runs_supported_cases_and_counts_skips(
@@ -264,6 +335,39 @@ def test_duplicate_logs_are_deduplicated_but_truncated_logs_are_not_complete() -
 def test_malformed_native_metadata_is_not_accepted(logs: str) -> None:
     with pytest.raises(RemoteDemoError, match="acs_decision"):
         audit_decisions(logs)
+
+
+@pytest.mark.parametrize("value", [None, "true", 0, 1, [], {}])
+def test_malformed_approval_metadata_is_not_accepted(value: object) -> None:
+    metadata = dict(event(0, "agent_startup"), approval_required=value)
+    with pytest.raises(RemoteDemoError, match="Malformed"):
+        audit_decisions(json.dumps(metadata))
+
+
+@pytest.mark.parametrize("value", [False, True, 0, [], {}])
+def test_malformed_resolution_metadata_is_not_accepted(value: object) -> None:
+    metadata = dict(event(0, "agent_startup"), resolved_by=value)
+    with pytest.raises(RemoteDemoError, match="Malformed"):
+        audit_decisions(json.dumps(metadata))
+
+
+def test_native_approval_and_resolution_fields_are_preserved() -> None:
+    metadata = dict(
+        event(4, "pre_tool_call", reason="large_transfer_requires_approval"),
+        resolved_by="approval",
+    )
+    record = audit_decisions(json.dumps(metadata))[0]
+    assert record.approval_required is True
+    assert record.resolved_by == "approval"
+
+
+def test_missing_optional_approval_metadata_is_not_invented() -> None:
+    metadata = event(0, "agent_startup")
+    del metadata["approval_required"]
+    del metadata["resolved_by"]
+    record = audit_decisions(json.dumps(metadata))[0]
+    assert record.approval_required is None
+    assert record.resolved_by is None
 
 
 def test_native_runtime_errors_cannot_be_reported_as_success() -> None:

@@ -29,6 +29,12 @@ from agent_hooks import (
 )
 
 from banking_agent import INITIAL_BALANCE_CENTS, AuditTrail, BankingLedger, banking_agent
+from demo_output import (
+    print_acs_decision,
+    print_agent_response,
+    print_scenario_start,
+    print_trace_header,
+)
 from scenarios import SCENARIOS as SCENARIOS
 from scenarios import SCENARIOS_BY_NAME as SCENARIOS_BY_NAME
 from scenarios import Scenario as Scenario
@@ -220,14 +226,37 @@ async def run_scenario(scenario: Scenario, *, streaming: bool = False) -> Scenar
 
 async def run_demo(scenario_name: str | None = None) -> None:
     cases = SCENARIOS if scenario_name is None else (SCENARIOS_BY_NAME[scenario_name],)
-    print("SIMULATED BANK | scripted model | REAL native MAF + ACS enforcement\n")
+    print("SIMULATED BANK | scripted model | REAL native MAF + ACS enforcement", flush=True)
+    print("ACS verdicts apply per lifecycle point; a later ALLOW does not undo an earlier DENY.")
     for scenario in cases:
+        print_scenario_start(scenario, scenario.prompt, scripted=True)
         result = await run_scenario(scenario)
+        print_trace_header()
+        for record in result.audit.records:
+            print_acs_decision(
+                sequence=record.sequence,
+                point=record.interception_point.value,
+                decision=record.verdict.decision.value,
+                reasons=[verdict.reason for verdict in record.verdicts if verdict.reason],
+                warnings=[warning.reason for warning in record.verdict.warnings],
+                approval_required=record.verdict.approval is not None,
+                resolved_by=record.resolved_by,
+            )
+        if not result.audit.records:
+            print("  No native ACS decisions were recorded.")
+        print("\nOBSERVED LOCAL EXECUTION")
+        if result.audit.records:
+            print(f"  Native session: {result.audit.records[0].session_id}")
+        else:
+            print("  Native session: unavailable")
+        print(f"  Scripted model calls: {result.client.call_count}")
+        print(f"  Executed tools: {', '.join(result.ledger.tool_calls) or 'NONE'}")
+        balance = result.ledger.balance("checking-001")["balance_cents"]
+        print(f"  Checking balance: USD {balance // 100:,}.{balance % 100:02d} ({balance} cents)")
         result.verify()
-        print(f"PASS {scenario.name:20} {scenario.point:15} {scenario.decision.upper()}")
-        print(f"     tool calls: {result.ledger.tool_calls or 'NONE'}")
-        print(
-            f"     checking balance: {result.ledger.balance('checking-001')['balance_cents']} cents"
+        print_agent_response(
+            result.text, scripted_tool_result=bool(result.client.seen_tool_results)
         )
-        print(f"     {result.text}")
-    print(f"\n{len(cases)}/{len(cases)} scenarios verified.")
+        print("\nRESULT")
+        print(f"PASS {scenario.name:20} {scenario.point:15} {scenario.decision.upper()}")
+    print(f"\n{'=' * 88}\nSUMMARY: {len(cases)}/{len(cases)} scenarios verified.")

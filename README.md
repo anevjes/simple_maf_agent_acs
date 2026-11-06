@@ -100,9 +100,31 @@ For one scenario:
 docker run --rm --platform linux/amd64 banking-acs-demo:local python main.py --demo --scenario large-transfer
 ```
 
-The `acs_decision` JSON log shows the interception point, verdict, rule reason,
-warning, and approval resolution. It does **not** log prompts, tool arguments,
-tool results, or account numbers.
+### Read the demo output
+
+Both demo modes show a separate block for each scenario:
+
+1. **INPUT**: the prepared request. Offline mode also labels the scripted tool
+   request as planned, not proof of execution.
+2. **NATIVE ACS TIMELINE**: every recorded lifecycle event, in sequence, with its
+   actual `ALLOW`, `DENY`, or `TRANSFORM` verdict, rule reasons, `[WARN]` details,
+   and available native approval/resolution metadata.
+3. **AGENT RESPONSE**: the final reply, separate from the policy evidence.
+4. **RESULT** and **SUMMARY**: `PASS` for verified offline execution, or
+   `OBSERVED` / `NOT_OBSERVED` / `SKIP` remotely. Offline output also shows model
+   call counts, executed tools, and the simulated checking balance.
+
+A later `agent_shutdown ALLOW` only allows shutdown; it never overrides a
+`pre_tool_call DENY`. Lifecycle rows describe observable boundaries, not the
+model's private reasoning. The hosted audit does not record executed tool names
+or arguments, so the remote runner does not invent those details.
+
+The terminal view masks synthetic account-number markers and escapes control
+characters without altering requests or native ACS checks. The structured
+`acs_decision` JSON audit remains metadata-only: it contains lifecycle points,
+verdicts, reasons, warnings, and approval resolution, **not** prompts, tool
+arguments/results, or account numbers. Offline CLI output avoids repeating the
+raw INFO JSON; hosted/server JSON logging is unchanged.
 
 ## Run against the remote hosted agent
 
@@ -163,12 +185,16 @@ so changing the Rego policy will not resolve this failure.
 
 For each executable scenario, the runner:
 
-1. Creates its own uniquely named hosted session.
-2. Sends a natural-language request containing explicit tool arguments, including
-   integer cents and a fresh idempotency key. It never sends `/demo` commands to
-   the real model or supplies approval as a tool argument.
+1. Displays the prepared input and expected native condition, then creates its
+   own uniquely named hosted session. Host activity messages show progress.
+2. Sends that same displayed request, containing explicit tool arguments,
+   integer cents, and a fresh idempotency key. Console-only masking does not
+   change what is sent. It never sends `/demo` commands to the real model or
+   supplies approval as a tool argument.
 3. Reads that hosted session's native `acs_decision` logs and requires a complete,
-   unambiguous control trace. Short log-ingestion delays are retried.
+   unambiguous control trace. All events are displayed, not just the expected
+   hook. Short log-ingestion delays are retried; incomplete traces are explicitly
+   labeled **PARTIAL - NOT VERIFIED** and fail.
 4. Reports `OBSERVED` only for the expected **hook, verdict, reason and warning**.
    `agent_shutdown: allow` never substitutes for `pre_tool_call: deny`.
 5. Stops only its own session, including on failure. Existing sessions are not
@@ -254,10 +280,10 @@ Remote-client tests mock azd's HTTP/log transport, exercise its failure and clea
 paths, and check compatibility with real native audit records. They do not invoke
 Foundry. Live validation of the new remote runner has not been performed.
 
-Earlier local verification passed **54 native banking regressions** and
-**14/14 offline CLI scenarios**. The latest focused run passed
-**65 remote-client/audit-compatibility checks**, including CLI diagnostic and
-payload-suppression regressions.
+Local verification passed **54 native banking regressions**. The latest focused
+run passed **118 remote-client/display/audit-compatibility checks**, including
+input identity, full timelines, warning/approval details, and payload-suppression
+regressions. The rebuilt Linux x64 runtime verified **14/14 offline CLI scenarios**.
 Earlier local Responses HTTP requests verified transfers, idempotency, policy
 denials, and tool/output redaction without leaking account numbers into SSE
 events. Ruff and Pyright passed. Validation is offline: banking runs use the

@@ -9,7 +9,7 @@ RUN python -m venv /app/.venv
 COPY requirements.txt .
 ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN pip install --no-cache-dir -r requirements.txt && pip check
-COPY banking_agent.py demo.py main.py remote_demo.py scenarios.py ./
+COPY banking_agent.py demo.py demo_output.py main.py remote_demo.py scenarios.py ./
 COPY policies ./policies
 
 RUN groupadd --system banking && useradd --system --create-home --gid banking banking

@@ -6,6 +6,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from demo_output import DemoAuditConsoleFilter
 from remote_demo import RemoteDemoError, run_remote_demo, validate_remote_options
 from scenarios import SCENARIOS_BY_NAME
 
@@ -140,7 +141,11 @@ def main() -> None:
             )
         except RemoteDemoError as exc:
             parser.error(str(exc))
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(message)s"))
+    if mode == "demo" and args.demo:
+        console.addFilter(DemoAuditConsoleFilter())
+    logging.basicConfig(level=logging.INFO, handlers=[console])
     try:
         status = asyncio.run(
             run(

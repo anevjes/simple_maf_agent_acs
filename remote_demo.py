@@ -11,6 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from demo_output import (
+    console_text,
+    print_acs_decision,
+    print_agent_response,
+    print_scenario_start,
+    print_trace_header,
+)
 from scenarios import SCENARIOS, SCENARIOS_BY_NAME, Scenario
 
 ROOT = Path(__file__).resolve().parent
@@ -47,6 +54,8 @@ class NativeDecision:
     decision: str
     reasons: tuple[str, ...]
     warnings: tuple[str, ...]
+    approval_required: bool | None = None
+    resolved_by: str | None = None
 
     @classmethod
     def parse(cls, value: dict[str, object]) -> NativeDecision:
@@ -56,6 +65,8 @@ class NativeDecision:
         decision = value.get("decision")
         reasons = value.get("reasons")
         warnings = value.get("warnings")
+        approval_required = value.get("approval_required")
+        resolved_by = value.get("resolved_by")
         if (
             not isinstance(session_id, str)
             or not session_id
@@ -67,9 +78,21 @@ class NativeDecision:
             or not all(isinstance(reason, str) for reason in reasons)
             or not isinstance(warnings, list)
             or not all(isinstance(warning, str) for warning in warnings)
+            or (approval_required is not None and type(approval_required) is not bool)
+            or ("approval_required" in value and approval_required is None)
+            or (resolved_by is not None and not isinstance(resolved_by, str))
         ):
             raise RemoteDemoError("Malformed native acs_decision metadata.")
-        return cls(session_id, sequence, point, str(decision), tuple(reasons), tuple(warnings))
+        return cls(
+            session_id,
+            sequence,
+            point,
+            str(decision),
+            tuple(reasons),
+            tuple(warnings),
+            approval_required,
+            resolved_by,
+        )
 
 
 def audit_decisions(text: str) -> list[NativeDecision]:
@@ -246,6 +269,22 @@ def _check_command(result: subprocess.CompletedProcess[str], operation: str) -> 
         raise RemoteDemoError(f"azd {operation} failed (exit {result.returncode}):\n{detail}")
 
 
+def _print_native_trace(records: Sequence[NativeDecision], *, complete: bool = True) -> None:
+    print_trace_header(complete=complete)
+    if not records:
+        print("  No native ACS decisions were retrieved.", flush=True)
+    for record in records:
+        print_acs_decision(
+            sequence=record.sequence,
+            point=record.point,
+            decision=record.decision,
+            reasons=record.reasons,
+            warnings=record.warnings,
+            approval_required=record.approval_required,
+            resolved_by=record.resolved_by,
+        )
+
+
 def _remote_case(
     scenario: Scenario,
     *,
@@ -254,6 +293,8 @@ def _remote_case(
     version: str | None,
     timeout: int,
 ) -> tuple[EndpointResponse, list[NativeDecision], str]:
+    prompt = scenario.remote_prompt
+    print_scenario_start(scenario, prompt)
     if shutil.which("azd") is None:
         raise RemoteDemoError("Install azd and its azure.ai.agents extension before remote mode.")
     session_id = f"banking-demo-{uuid4().hex}"
@@ -261,13 +302,15 @@ def _remote_case(
     if version:
         create.extend(("--version", version))
     # A caller-selected ID isolates audit evidence and cleanup from existing sessions.
+    print(f"\nHOST ACTIVITY\n  [RUN] Creating isolated session {session_id}", flush=True)
     try:
         _check_command(_azd(create, environment=environment, timeout=timeout), "session creation")
+        print("  [OK] Hosted session created.\n  [RUN] Sending the prepared input.", flush=True)
         invocation = _azd(
             [
                 "invoke",
                 agent_name,
-                scenario.remote_prompt,
+                prompt,
                 "--session-id",
                 session_id,
                 "--new-conversation",
@@ -283,6 +326,12 @@ def _remote_case(
         )
         _check_command(invocation, "invocation")
         response = endpoint_response(invocation.stdout)
+        print(
+            f"  [OK] Responses request returned: {response.status}.\n"
+            "  [RUN] Retrieving native ACS decisions.",
+            flush=True,
+        )
+        records: list[NativeDecision] = []
         for attempt in range(3):
             logs = _azd(
                 ["monitor", agent_name, "--session-id", session_id, "--tail", "300", "--raw"],
@@ -292,21 +341,28 @@ def _remote_case(
             _check_command(logs, "audit retrieval")
             records = audit_decisions(logs.stdout)
             if complete_trace(records):
+                print(f"  [OK] Retrieved {len(records)} native lifecycle decisions.", flush=True)
+                _print_native_trace(records)
+                print_agent_response(response.text, status=response.status)
                 return response, records, session_id
             if attempt < 2:
+                print("  [WAIT] Native audit is not complete; retrying.", flush=True)
                 time.sleep(1)
+        _print_native_trace(records, complete=False)
         raise RemoteDemoError(
             "Native audit is missing, truncated, or ambiguous; no ACS verdict can be verified."
         )
     finally:
         original_error = sys.exception()
         try:
+            print("\nHOST CLEANUP\n  [RUN] Stopping the demo-owned hosted session.", flush=True)
             stopped = _azd(
                 ["sessions", "stop", session_id, "--agent-name", agent_name],
                 environment=environment,
                 timeout=timeout,
             )
             _check_command(stopped, f"cleanup of demo-owned session {session_id}")
+            print("  [OK] Demo-owned session stopped.", flush=True)
         except RemoteDemoError as exc:
             if original_error is None:
                 raise
@@ -326,13 +382,19 @@ def run_remote_demo(
     )
     cases = SCENARIOS if scenario_name is None else (SCENARIOS_BY_NAME[scenario_name],)
     print(
-        f"SIMULATED BANK | REMOTE hosted agent: {agent_name} | azd env: {environment or 'default'}"
+        console_text(
+            f"SIMULATED BANK | REMOTE hosted agent: {agent_name} "
+            f"| azd env: {environment or 'default'}"
+        ),
+        flush=True,
     )
-    print("Checking native hook evidence, not the last shutdown verdict or model claims.\n")
+    print("Checking native hook evidence, not the last shutdown verdict or model claims.")
+    print("ACS verdicts apply per lifecycle point; a later ALLOW does not undo an earlier DENY.")
     observed = missing = skipped = 0
     for scenario in cases:
         if scenario.name in HOST_APPROVAL_SCENARIOS:
             skipped += 1
+            print_scenario_start(scenario, None)
             print(f"SKIP {scenario.name}: hosted demo has no trusted operator resolver.")
             continue
         response, records, session_id = _remote_case(
@@ -347,10 +409,11 @@ def run_remote_demo(
             response.status == "failed" and scenario.decision == "deny" and matches
         ):
             raise RemoteDemoError(f"{scenario.name}: Responses request ended as {response.status}.")
+        print("\nRESULT")
         if matches:
             observed += 1
             print(
-                f"OBSERVED {scenario.name:20} {scenario.point:15} {scenario.decision.upper()}"
+                f"OBSERVED {scenario.name:20} {scenario.point} {scenario.decision.upper()}"
                 f" {scenario.reason or ''}"
             )
         else:
@@ -361,14 +424,9 @@ def run_remote_demo(
             )
             print("     A model refusal or different tool arguments are not ACS evidence.")
         print(f"     hosted session: {session_id}; native session: {records[0].session_id}")
-        for record in records:
-            if record.point == scenario.point:
-                print(
-                    f"     native #{record.sequence}: {record.point} {record.decision.upper()}"
-                    f" reasons={list(record.reasons)} warnings={list(record.warnings)}"
-                )
-        if response.text:
-            print(f"     {response.text}")
-    print(f"\n{observed} observed; {missing} not observed; {skipped} skipped.")
-    print("Remote mode does not assert ledger mutations or exact tool arguments.")
+    print(
+        f"\n{'=' * 88}\nSUMMARY: {observed} observed; {missing} not observed; {skipped} skipped."
+    )
+    print("Remote audit does not expose executed tool names/arguments or ledger mutations.")
+    print("Lifecycle rows are observed boundaries, not private model reasoning.")
     return 1 if missing else (0 if observed else 2)
